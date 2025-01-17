@@ -374,9 +374,12 @@ TEST("world:query()", function()
 		world:set(e, Bar, false)
 		local i = 0
 
+		local iter = 0
 		for _, e in q:iter() do
+			iter += 1
 			i=1
 		end
+		CHECK (iter == 1)
 		CHECK(i == 1)
 		for _, e in q:iter() do
 			i=2
@@ -897,20 +900,39 @@ end)
 
 TEST("world:children", function()
 	local world = world_new()
-	local e1 = world:entity()
-	local e2 = world:entity()
-	local e3 = world:entity()
+	local C = world:component()
+	local T = world:entity()
 
+	local e1 = world:entity()
+	world:set(e1, C, true)
+
+	local e2 = world:entity()
+
+	world:add(e2, T)
 	world:add(e2, pair(ChildOf, e1))
+
+	local e3 = world:entity()
 	world:add(e3, pair(ChildOf, e1))
 
-	for entity in world:children(pair(ChildOf, e1)) do
+	local count = 0
+	for entity in world:children(e1) do
+		count += 1
 		if entity == e2 or entity == e3 then
 			CHECK(true)
 			continue
 		end
 		CHECK(false)
 	end
+	CHECK(count == 2)
+
+	world:remove(e2, pair(ChildOf, e1))
+
+	count = 0
+	for entity in world:children(e1) do
+		count += 1
+	end
+
+	CHECK(count == 1)
 end)
 
 TEST("world:clear()", function()
@@ -1364,6 +1386,65 @@ TEST("Hooks", function()
 	end
 end)
 
+TEST("change tracking", function()
+	CASE "#1" do
+		local world = world_new()
+		local Foo = world:component()
+		local Previous = jecs.Rest
+
+		local q1 = world
+			:query(Foo)
+			:without(pair(Previous, Foo))
+			:cached()
+
+		local e1 = world:entity()
+		world:set(e1, Foo, 1)
+		local e2 = world:entity()
+		world:set(e2, Foo, 2)
+
+		local i = 0
+		for e, new in q1 do
+			i += 1
+			world:set(e, pair(Previous, Foo), new)
+		end
+
+		CHECK(i == 2)
+		local j = 0
+		for e, new in q1 do
+			j += 1
+			world:set(e, pair(Previous, Foo), new)
+		end
+
+		CHECK(j == 0)
+	end
+
+	CASE "#2" do
+		local world = world_new()
+		local component = world:component()
+		local tag = world:entity()
+		local previous = jecs.Rest
+
+		local q1 = world:query(component):without(pair(previous, component), tag):cached()
+
+		local testEntity = world:entity()
+
+		world:set(testEntity, component, 10)
+
+		local i = 0
+		for entity, number in q1 do
+			i += 1
+			world:add(testEntity, tag)
+		end
+
+		CHECK(i == 1)
+
+		for e, n in q1 do
+			world:set(e, pair(previous, component), n)
+		end
+	end
+
+end)
+
 TEST("repro", function()
 	do CASE "#1"
 		local world = world_new()
@@ -1500,9 +1581,9 @@ TEST("repro", function()
 		local world = world_new()
 		local component1 = world:component()
 		local tag1 = world:entity()
-		
+
 		local query = world:query(component1):with(tag1):cached()
-		
+
 		local entity = world:entity()
 		world:set(entity, component1, "some data")
 
@@ -1511,6 +1592,133 @@ TEST("repro", function()
 			counter += 1
 		end
 		CHECK(counter == 0)
+	end
+end)
+
+TEST("wildcard query", function()
+	do CASE "#1"
+		local world = world_new()
+		local pair = jecs.pair
+
+		local Relation = world:entity()
+		local Wildcard = jecs.Wildcard
+		local A = world:entity()
+
+		local relationship = pair(Relation, Wildcard)
+		local query = world:query(relationship):cached()
+
+		local entity = world:entity()
+
+		world:add(entity, pair(Relation, A))
+
+		local counter = 0
+		for e in query:iter() do
+			counter += 1
+		end
+		CHECK(counter == 1)
+	end
+	do CASE "#2"
+		local world = world_new()
+		local pair = jecs.pair
+
+		local Relation = world:entity()
+		local Wildcard = jecs.Wildcard
+		local A = world:entity()
+
+		local relationship = pair(Relation, Wildcard)
+
+		local entity = world:entity()
+
+		world:add(entity, pair(Relation, A))
+
+		local counter = 0
+		for e in world:query(relationship):iter() do
+			counter += 1
+		end
+		CHECK(counter == 1)
+	end
+	do CASE "#3"
+		local world = world_new()
+		local pair = jecs.pair
+
+		local Relation = world:entity()
+		local Wildcard = jecs.Wildcard
+		local A = world:entity()
+
+		local entity = world:entity()
+
+		world:add(entity, pair(Relation, A))
+
+		local relationship = pair(Relation, Wildcard)
+		local query = world:query(relationship):cached()
+
+		local counter = 0
+		for e in query:iter() do
+			counter += 1
+		end
+		CHECK(counter == 1)
+	end
+end)
+
+TEST("world:delete() invokes OnRemove hook", function()
+	do CASE "#1"
+		local world = world_new()
+		
+		local A = world:entity()
+		local entity = world:entity()
+
+		local called = false
+		world:set(A, jecs.OnRemove, function(e)
+			called = true
+		end)
+
+		world:add(entity, A)
+		world:delete(entity)
+
+		CHECK(called)
+	end
+	do CASE "#2"
+		local world = world_new()
+		local pair = jecs.pair
+
+		local Relation = world:entity()
+		local A = world:entity()
+		local B = world:entity()
+
+		world:add(Relation, pair(jecs.OnDelete, jecs.Delete))
+
+		local entity = world:entity()
+
+		local called = false
+		world:set(A, jecs.OnRemove, function(e)
+			called = true
+		end)
+
+		world:add(entity, A)
+		world:add(entity, pair(Relation, B))
+		
+		world:delete(B)
+
+		CHECK(called)
+	end
+	do CASE "#3"
+		local world = world_new()
+		local pair = jecs.pair
+
+		local viewingContainer = world:entity()
+		local character = world:entity()
+		local container = world:entity()
+
+		local called = false
+		world:set(viewingContainer, jecs.OnRemove, function(e)
+			called = true
+		end)
+
+		world:add(character, pair(viewingContainer, container))
+
+		world:delete(container)
+
+		CHECK(called)
 	end
 end)
 FINISH()
