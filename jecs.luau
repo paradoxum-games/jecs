@@ -2307,7 +2307,6 @@ local function world_snapshot(world)
 end
 
 local function world_restore(world, snapshot)
-	-- First pass: create the structures with minimal connections
 	world.entity_index = {
 		dense_array = snapshot.entity_index.dense_array,
 		sparse_array = {},
