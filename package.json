@@ -1,6 +1,6 @@
 {
 	"name": "@paradoxum-games/jecs",
-	"version": "0.5.6",
+	"version": "0.5.7",
 	"description": "Stupidly fast Entity Component System",
 	"repository": {
 	  "type": "git",
