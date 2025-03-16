@@ -2307,7 +2307,9 @@ local function world_snapshot(world)
 end
 
 local function world_restore(world, snapshot)
-	-- First pass: create the structures with minimal connections
+	local original_component_index = world.component_index
+	local max_component_id_original = world.max_component_id
+
 	world.entity_index = {
 		dense_array = snapshot.entity_index.dense_array,
 		sparse_array = {},
@@ -2317,9 +2319,16 @@ local function world_restore(world, snapshot)
 
 	world.archetypes = snapshot.archetypes
 	world.archetype_index = snapshot.archetype_index
+
 	world.component_index = snapshot.component_index
+	for id, record in original_component_index do
+		if id > snapshot.max_component_id and id <= max_component_id_original then
+			world.component_index[id] = record
+		end
+	end
+
+	world.max_component_id = math.max(snapshot.max_component_id, max_component_id_original)
 	world.max_archetype_id = snapshot.max_archetype_id
-	world.max_component_id = snapshot.max_component_id
 
 	for id, record in snapshot.entity_index.sparse_array do
 		world.entity_index.sparse_array[id] = {
@@ -2339,7 +2348,7 @@ local function world_restore(world, snapshot)
 					id = edge_info.id,
 					prev = nil,
 					next = nil,
-				} :: any
+				}
 			end
 		end
 
@@ -2352,7 +2361,7 @@ local function world_restore(world, snapshot)
 					id = edge_info.id,
 					prev = nil,
 					next = nil,
-				} :: any
+				}
 			end
 		end
 
@@ -2362,7 +2371,7 @@ local function world_restore(world, snapshot)
 		}
 	end
 
-	for _, archetype: any in world.archetypes do
+	for _, archetype in world.archetypes :: any do
 		if archetype.refs.next_id then
 			local next_archetype = world.archetypes[archetype.refs.next_id]
 			if next_archetype then
@@ -2390,7 +2399,7 @@ local function world_restore(world, snapshot)
 		end
 	end
 
-	for _, archetype in world.archetypes do
+	for _, archetype in world.archetypes :: any do
 		for _, edge in archetype.add do
 			if edge.to then
 				local to_refs = edge.to.refs
@@ -2425,8 +2434,8 @@ local function world_restore(world, snapshot)
 		query.world = world
 		table.clear(query.compatible_archetypes)
 
-		for _, archetype: any in world.archetypes do
-			if query_match(query, archetype) then
+		for _, archetype in world.archetypes do
+			if query_match(query, archetype :: any) then
 				table.insert(query.compatible_archetypes, archetype)
 			end
 		end
