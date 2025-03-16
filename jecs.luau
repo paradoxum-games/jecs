@@ -2319,11 +2319,24 @@ local function world_restore(world, snapshot)
 
 	world.archetypes = snapshot.archetypes
 	world.archetype_index = snapshot.archetype_index
-
 	world.component_index = snapshot.component_index
+
+	local used_component_ids = {}
+	for _, archetype in world.archetypes do
+		for id in archetype.records do
+			used_component_ids[id] = true
+		end
+	end
+
 	for id, record in original_component_index do
-		if id > snapshot.max_component_id and id <= max_component_id_original then
+		if id > snapshot.max_component_id or (used_component_ids[id] and not world.component_index[id]) then
 			world.component_index[id] = record
+		end
+	end
+
+	for id in used_component_ids do
+		if not world.component_index[id] then
+			id_record_ensure(world, id)
 		end
 	end
 
@@ -2371,7 +2384,7 @@ local function world_restore(world, snapshot)
 		}
 	end
 
-	for _, archetype in world.archetypes :: any do
+	for _, archetype in world.archetypes do
 		if archetype.refs.next_id then
 			local next_archetype = world.archetypes[archetype.refs.next_id]
 			if next_archetype then
@@ -2399,7 +2412,7 @@ local function world_restore(world, snapshot)
 		end
 	end
 
-	for _, archetype in world.archetypes :: any do
+	for _, archetype in world.archetypes do
 		for _, edge in archetype.add do
 			if edge.to then
 				local to_refs = edge.to.refs
@@ -2435,7 +2448,7 @@ local function world_restore(world, snapshot)
 		table.clear(query.compatible_archetypes)
 
 		for _, archetype in world.archetypes do
-			if query_match(query, archetype :: any) then
+			if query_match(query, archetype) then
 				table.insert(query.compatible_archetypes, archetype)
 			end
 		end
