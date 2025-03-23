@@ -2325,7 +2325,7 @@ local function world_restore(world, snapshot)
 		valid_archetypes[id] = true
 	end
 
-	world.component_index = {}
+	local new_component_index = {}
 
 	for id, record in snapshot.component_index do
 		local clean_record = {
@@ -2333,65 +2333,33 @@ local function world_restore(world, snapshot)
 			columns = {},
 			counts = {},
 			flags = record.flags,
-			hooks = {
-				on_add = record.hooks.on_add,
-				on_set = record.hooks.on_set,
-				on_remove = record.hooks.on_remove,
-			},
+			hooks = record.hooks,
 		}
 
 		for archetype_id, column in record.columns do
 			if valid_archetypes[archetype_id] then
 				clean_record.columns[archetype_id] = column
 				clean_record.counts[archetype_id] = record.counts[archetype_id]
-				clean_record.size = clean_record.size + 1
+				clean_record.size += 1
 			end
 		end
 
-		world.component_index[id] = clean_record
+		new_component_index[id] = clean_record
 	end
 
 	for id, record in original_component_index do
-		if not world.component_index[id] then
-			local needed = false
-			for archetype_id in record.columns do
-				if valid_archetypes[archetype_id] then
-					needed = true
-					break
-				end
-			end
-
-			if id > snapshot.max_component_id then
-				needed = true
-			end
-
-			if needed then
-				local clean_record = {
-					size = 0,
-					columns = {},
-					counts = {},
-					flags = record.flags,
-					hooks = {
-						on_add = record.hooks.on_add,
-						on_set = record.hooks.on_set,
-						on_remove = record.hooks.on_remove,
-					},
-				}
-
-				for archetype_id, column in record.columns do
-					if valid_archetypes[archetype_id] then
-						clean_record.columns[archetype_id] = column
-						clean_record.counts[archetype_id] = record.counts[archetype_id]
-						clean_record.size = clean_record.size + 1
-					end
-				end
-
-				if clean_record.size > 0 or id > snapshot.max_component_id then
-					world.component_index[id] = clean_record
-				end
-			end
+		if not new_component_index[id] then
+			new_component_index[id] = {
+				size = 0,
+				columns = {},
+				counts = {},
+				flags = record.flags,
+				hooks = record.hooks,
+			}
 		end
 	end
+
+	world.component_index = new_component_index
 
 	world.max_component_id = math.max(snapshot.max_component_id, max_component_id_original)
 	world.max_archetype_id = snapshot.max_archetype_id
@@ -2404,7 +2372,20 @@ local function world_restore(world, snapshot)
 		}
 	end
 
-	for _, archetype in world.archetypes do
+	for archetype_id, archetype in world.archetypes do
+		for _, component_id in archetype.types do
+			local idr = world.component_index[component_id]
+			if idr then
+				local index = archetype.records[component_id]
+				if index then
+					-- Connect component to archetype
+					idr.columns[archetype_id] = index
+					idr.counts[archetype_id] = archetype.counts[component_id] or 1
+					idr.size += 1
+				end
+			end
+		end
+
 		for edge_id, edge_info in archetype.add do
 			if edge_info.to_id and valid_archetypes[edge_info.to_id] then
 				local to_archetype = world.archetypes[edge_info.to_id]
@@ -2441,7 +2422,7 @@ local function world_restore(world, snapshot)
 		}
 	end
 
-	for _, archetype in world.archetypes do
+	for _, archetype: any in world.archetypes do
 		if archetype.refs.next_id and valid_archetypes[archetype.refs.next_id] then
 			local next_archetype = world.archetypes[archetype.refs.next_id]
 			for _, edge in next_archetype.add do
@@ -2465,7 +2446,7 @@ local function world_restore(world, snapshot)
 		end
 	end
 
-	for _, archetype in world.archetypes do
+	for _, archetype: any in world.archetypes do
 		for _, edge in archetype.add do
 			if edge.to then
 				local to_refs = edge.to.refs
@@ -2493,6 +2474,42 @@ local function world_restore(world, snapshot)
 		end
 	end
 
+	for id, record in original_component_index do
+		if not snapshot.component_index[id] then
+			local idr = world.component_index[id]
+
+			if idr.size == 0 then
+				idr = id_record_ensure(world :: any, id)
+
+				local types = { id }
+				table.sort(types)
+
+				local ty = hash(types)
+				local to_archetype = world.archetype_index[ty]
+
+				if not to_archetype then
+					to_archetype = archetype_create(world :: any, types, ty)
+				end
+
+				local edge = {}
+				world.ROOT_ARCHETYPE.add[id] = edge :: any
+				edge.from = world.ROOT_ARCHETYPE
+				edge.to = to_archetype
+				edge.id = id
+
+				-- Connect to destination archetype's refs
+				local to_refs = to_archetype.refs
+				if to_refs.prev == nil then
+					to_refs.prev = edge :: any
+				else
+					local edge_prev = to_refs.prev
+					edge.next = edge_prev
+					edge_prev.prev = edge :: any
+				end
+			end
+		end
+	end
+	-- Reset and rebuild query observables
 	table.clear(world.observable)
 	local observable = world.observable
 
@@ -2501,7 +2518,7 @@ local function world_restore(world, snapshot)
 		query.next = nil
 		table.clear(query.compatible_archetypes)
 
-		for _, archetype in world.archetypes do
+		for _, archetype: any in world.archetypes do
 			if query_match(query, archetype) then
 				table.insert(query.compatible_archetypes, archetype)
 			end
