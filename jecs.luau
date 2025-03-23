@@ -2319,24 +2319,77 @@ local function world_restore(world, snapshot)
 
 	world.archetypes = snapshot.archetypes
 	world.archetype_index = snapshot.archetype_index
-	world.component_index = snapshot.component_index
 
-	local used_component_ids = {}
-	for _, archetype in world.archetypes do
-		for id in archetype.records do
-			used_component_ids[id] = true
+	local valid_archetypes = {}
+	for id in world.archetypes do
+		valid_archetypes[id] = true
+	end
+
+	world.component_index = {}
+
+	for id, record in snapshot.component_index do
+		local clean_record = {
+			size = 0,
+			columns = {},
+			counts = {},
+			flags = record.flags,
+			hooks = {
+				on_add = record.hooks.on_add,
+				on_set = record.hooks.on_set,
+				on_remove = record.hooks.on_remove,
+			},
+		}
+
+		for archetype_id, column in record.columns do
+			if valid_archetypes[archetype_id] then
+				clean_record.columns[archetype_id] = column
+				clean_record.counts[archetype_id] = record.counts[archetype_id]
+				clean_record.size = clean_record.size + 1
+			end
 		end
+
+		world.component_index[id] = clean_record
 	end
 
 	for id, record in original_component_index do
-		if id > snapshot.max_component_id or (used_component_ids[id] and not world.component_index[id]) then
-			world.component_index[id] = record
-		end
-	end
-
-	for id in used_component_ids do
 		if not world.component_index[id] then
-			id_record_ensure(world, id)
+			local needed = false
+			for archetype_id in record.columns do
+				if valid_archetypes[archetype_id] then
+					needed = true
+					break
+				end
+			end
+
+			if id > snapshot.max_component_id then
+				needed = true
+			end
+
+			if needed then
+				local clean_record = {
+					size = 0,
+					columns = {},
+					counts = {},
+					flags = record.flags,
+					hooks = {
+						on_add = record.hooks.on_add,
+						on_set = record.hooks.on_set,
+						on_remove = record.hooks.on_remove,
+					},
+				}
+
+				for archetype_id, column in record.columns do
+					if valid_archetypes[archetype_id] then
+						clean_record.columns[archetype_id] = column
+						clean_record.counts[archetype_id] = record.counts[archetype_id]
+						clean_record.size = clean_record.size + 1
+					end
+				end
+
+				if clean_record.size > 0 or id > snapshot.max_component_id then
+					world.component_index[id] = clean_record
+				end
+			end
 		end
 	end
 
@@ -2353,7 +2406,7 @@ local function world_restore(world, snapshot)
 
 	for _, archetype in world.archetypes do
 		for edge_id, edge_info in archetype.add do
-			if edge_info.to_id then
+			if edge_info.to_id and valid_archetypes[edge_info.to_id] then
 				local to_archetype = world.archetypes[edge_info.to_id]
 				archetype.add[edge_id] = {
 					from = archetype,
@@ -2362,11 +2415,13 @@ local function world_restore(world, snapshot)
 					prev = nil,
 					next = nil,
 				}
+			else
+				archetype.add[edge_id] = nil
 			end
 		end
 
 		for edge_id, edge_info in archetype.remove do
-			if edge_info.to_id then
+			if edge_info.to_id and valid_archetypes[edge_info.to_id] then
 				local to_archetype = world.archetypes[edge_info.to_id]
 				archetype.remove[edge_id] = {
 					from = archetype,
@@ -2375,6 +2430,8 @@ local function world_restore(world, snapshot)
 					prev = nil,
 					next = nil,
 				}
+			else
+				archetype.remove[edge_id] = nil
 			end
 		end
 
@@ -2385,27 +2442,23 @@ local function world_restore(world, snapshot)
 	end
 
 	for _, archetype in world.archetypes do
-		if archetype.refs.next_id then
+		if archetype.refs.next_id and valid_archetypes[archetype.refs.next_id] then
 			local next_archetype = world.archetypes[archetype.refs.next_id]
-			if next_archetype then
-				for _, edge in next_archetype.add do
-					if edge.to and edge.to.id == archetype.id then
-						archetype.refs.next = edge
-						break
-					end
+			for _, edge in next_archetype.add do
+				if edge.to and edge.to.id == archetype.id then
+					archetype.refs.next = edge
+					break
 				end
 			end
 			archetype.refs.next_id = nil
 		end
 
-		if archetype.refs.prev_id then
+		if archetype.refs.prev_id and valid_archetypes[archetype.refs.prev_id] then
 			local prev_archetype = world.archetypes[archetype.refs.prev_id]
-			if prev_archetype then
-				for _, edge in prev_archetype.remove do
-					if edge.to and edge.to.id == archetype.id then
-						archetype.refs.prev = edge
-						break
-					end
+			for _, edge in prev_archetype.remove do
+				if edge.to and edge.to.id == archetype.id then
+					archetype.refs.prev = edge
+					break
 				end
 			end
 			archetype.refs.prev_id = nil
@@ -2445,6 +2498,7 @@ local function world_restore(world, snapshot)
 
 	for _, query in world.cached_queries do
 		query.world = world
+		query.next = nil
 		table.clear(query.compatible_archetypes)
 
 		for _, archetype in world.archetypes do
@@ -2453,32 +2507,34 @@ local function world_restore(world, snapshot)
 			end
 		end
 
-		local A = query.ids[1]
+		if #query.ids > 0 then
+			local A = query.ids[1]
 
-		local on_create = observable[EcsOnArchetypeCreate] or {}
-		observable[EcsOnArchetypeCreate] = on_create
-		on_create[A] = on_create[A] or {}
-		table.insert(on_create[A], {
-			callback = function(archetype)
-				if query_match(query, archetype) then
-					table.insert(query.compatible_archetypes, archetype)
-				end
-			end,
-			query = query,
-		})
+			local on_create = observable[EcsOnArchetypeCreate] or {}
+			observable[EcsOnArchetypeCreate] = on_create
+			on_create[A] = on_create[A] or {}
+			table.insert(on_create[A], {
+				callback = function(archetype)
+					if query_match(query, archetype) then
+						table.insert(query.compatible_archetypes, archetype)
+					end
+				end,
+				query = query,
+			})
 
-		local on_delete = observable[EcsOnArchetypeDelete] or {}
-		observable[EcsOnArchetypeDelete] = on_delete
-		on_delete[A] = on_delete[A] or {}
-		table.insert(on_delete[A], {
-			callback = function(archetype)
-				local i = table.find(query.compatible_archetypes, archetype)
-				if i then
-					table.remove(query.compatible_archetypes, i)
-				end
-			end,
-			query = query,
-		})
+			local on_delete = observable[EcsOnArchetypeDelete] or {}
+			observable[EcsOnArchetypeDelete] = on_delete
+			on_delete[A] = on_delete[A] or {}
+			table.insert(on_delete[A], {
+				callback = function(archetype)
+					local i = table.find(query.compatible_archetypes, archetype)
+					if i then
+						table.remove(query.compatible_archetypes, i)
+					end
+				end,
+				query = query,
+			})
+		end
 	end
 end
 
